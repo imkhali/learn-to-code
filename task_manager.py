@@ -1,15 +1,16 @@
 """
-Task Manager - Phase 8: Builder Pattern
-Learn how to implement the Builder pattern for complex object construction
+Task Manager - Phase 9: State Pattern
+Learn how to implement the State pattern for state-dependent behavior
 
 Patterns Implemented:
 1. Observer Pattern - Event notifications
-2. Strategy Pattern - Sorting/filtering/display
-3. Command Pattern - Undo/redo
-4. Factory Pattern - Task creation
-5. Decorator Pattern - Dynamic feature addition
-6. Singleton Pattern - Single instance classes
-7. Builder Pattern - Fluent task construction (NEW!)
+2. Strategy Pattern - Sorting/filtering/display  
+3. Command Pattern - Undo/redo functionality
+4. Factory Pattern - Object creation by type
+5. Decorator Pattern - Add features dynamically
+6. Singleton Pattern - Single instance management
+7. Builder Pattern - Fluent object construction
+8. State Pattern - Task workflow states (NEW!)
 """
 
 from datetime import datetime, timedelta
@@ -18,6 +19,386 @@ from abc import ABC, abstractmethod
 from copy import deepcopy
 from enum import Enum
 import threading
+
+# ============================================================================
+# STATE PATTERN - TASK STATES
+# ============================================================================
+
+class TaskState(ABC):
+    """
+    Abstract base class for task states.
+    
+    This is the STATE PATTERN in action!
+    - Each state is a separate class
+    - State-specific behavior encapsulated
+    - Clean state transitions
+    - No giant if-elif chains
+    """
+    
+    @abstractmethod
+    def get_state_name(self) -> str:
+        """Return the name of this state"""
+        pass
+    
+    @abstractmethod
+    def get_state_icon(self) -> str:
+        """Return an icon representing this state"""
+        pass
+    
+    @abstractmethod
+    def can_transition_to(self, new_state: str) -> bool:
+        """Check if transition to new state is allowed"""
+        pass
+    
+    @abstractmethod
+    def on_enter(self, task: 'StatefulTask'):
+        """Called when entering this state"""
+        pass
+    
+    @abstractmethod
+    def on_exit(self, task: 'StatefulTask'):
+        """Called when exiting this state"""
+        pass
+    
+    def can_edit(self) -> bool:
+        """Can task be edited in this state? Default: yes"""
+        return True
+    
+    def can_delete(self) -> bool:
+        """Can task be deleted in this state? Default: yes"""
+        return True
+    
+    def can_complete(self) -> bool:
+        """Can task be marked complete in this state? Default: yes"""
+        return True
+
+
+class DraftState(TaskState):
+    """Task is in draft - not yet active"""
+    
+    def get_state_name(self) -> str:
+        return "Draft"
+    
+    def get_state_icon(self) -> str:
+        return "📝"
+    
+    def can_transition_to(self, new_state: str) -> bool:
+        # From Draft, can go to: Active, Archived
+        return new_state in ["Active", "Archived"]
+    
+    def on_enter(self, task: 'StatefulTask'):
+        TaskLogger().info(f"Task '{task.title}' entered Draft state")
+    
+    def on_exit(self, task: 'StatefulTask'):
+        TaskLogger().info(f"Task '{task.title}' left Draft state")
+    
+    def can_complete(self) -> bool:
+        return False  # Can't complete a draft
+
+
+class ActiveState(TaskState):
+    """Task is active and in progress"""
+    
+    def get_state_name(self) -> str:
+        return "Active"
+    
+    def get_state_icon(self) -> str:
+        return "🚀"
+    
+    def can_transition_to(self, new_state: str) -> bool:
+        # From Active, can go to: In Review, Completed, On Hold, Archived
+        return new_state in ["In Review", "Completed", "On Hold", "Archived"]
+    
+    def on_enter(self, task: 'StatefulTask'):
+        task.started_at = datetime.now()
+        TaskLogger().info(f"Task '{task.title}' is now Active")
+    
+    def on_exit(self, task: 'StatefulTask'):
+        pass
+
+
+class InReviewState(TaskState):
+    """Task is under review"""
+    
+    def get_state_name(self) -> str:
+        return "In Review"
+    
+    def get_state_icon(self) -> str:
+        return "👀"
+    
+    def can_transition_to(self, new_state: str) -> bool:
+        # From Review, can go to: Active (needs changes), Completed, Archived
+        return new_state in ["Active", "Completed", "Archived"]
+    
+    def on_enter(self, task: 'StatefulTask'):
+        TaskLogger().info(f"Task '{task.title}' is In Review")
+    
+    def on_exit(self, task: 'StatefulTask'):
+        pass
+    
+    def can_edit(self) -> bool:
+        return False  # Can't edit while in review
+
+
+class CompletedState(TaskState):
+    """Task is completed"""
+    
+    def get_state_name(self) -> str:
+        return "Completed"
+    
+    def get_state_icon(self) -> str:
+        return "✅"
+    
+    def can_transition_to(self, new_state: str) -> bool:
+        # From Completed, can go to: Active (reopen), Archived
+        return new_state in ["Active", "Archived"]
+    
+    def on_enter(self, task: 'StatefulTask'):
+        task.completed = True
+        task.completed_at = datetime.now()
+        TaskLogger().info(f"Task '{task.title}' completed!")
+        GlobalStats().increment('tasks_completed')
+    
+    def on_exit(self, task: 'StatefulTask'):
+        task.completed = False
+        task.completed_at = None
+    
+    def can_edit(self) -> bool:
+        return False  # Can't edit completed tasks
+    
+    def can_complete(self) -> bool:
+        return False  # Already completed
+
+
+class OnHoldState(TaskState):
+    """Task is temporarily on hold"""
+    
+    def get_state_name(self) -> str:
+        return "On Hold"
+    
+    def get_state_icon(self) -> str:
+        return "⏸️"
+    
+    def can_transition_to(self, new_state: str) -> bool:
+        # From On Hold, can go to: Active, Archived
+        return new_state in ["Active", "Archived"]
+    
+    def on_enter(self, task: 'StatefulTask'):
+        TaskLogger().info(f"Task '{task.title}' is On Hold")
+    
+    def on_exit(self, task: 'StatefulTask'):
+        pass
+    
+    def can_complete(self) -> bool:
+        return False  # Can't complete while on hold
+
+
+class ArchivedState(TaskState):
+    """Task is archived (no longer active)"""
+    
+    def get_state_name(self) -> str:
+        return "Archived"
+    
+    def get_state_icon(self) -> str:
+        return "📦"
+    
+    def can_transition_to(self, new_state: str) -> bool:
+        # From Archived, can only restore to Draft
+        return new_state == "Draft"
+    
+    def on_enter(self, task: 'StatefulTask'):
+        task.archived_at = datetime.now()
+        TaskLogger().info(f"Task '{task.title}' archived")
+    
+    def on_exit(self, task: 'StatefulTask'):
+        task.archived_at = None
+    
+    def can_edit(self) -> bool:
+        return False
+    
+    def can_delete(self) -> bool:
+        return True
+    
+    def can_complete(self) -> bool:
+        return False
+
+
+# State Registry (for easy access)
+TASK_STATES = {
+    "Draft": DraftState(),
+    "Active": ActiveState(),
+    "In Review": InReviewState(),
+    "Completed": CompletedState(),
+    "On Hold": OnHoldState(),
+    "Archived": ArchivedState()
+}
+
+
+# ============================================================================
+# STATEFUL TASK (Task with State Pattern)
+# ============================================================================
+
+class StatefulTask:
+    """
+    A task that uses the State Pattern for workflow management.
+    
+    State transitions:
+    Draft → Active → In Review → Completed → Archived
+              ↓         ↓          ↓
+          On Hold    Active     Active
+    """
+    
+    def __init__(self, title: str, description: str = ""):
+        if not title.strip():
+            raise ValueError("Task title cannot be empty")
+        
+        self.id = self._generate_id()
+        self.title = title.strip()
+        self.description = description.strip()
+        self.created_at = datetime.now()
+        
+        # State-specific attributes
+        self.state: TaskState = TASK_STATES["Draft"]  # Start in Draft
+        self.completed = False
+        self.started_at: Optional[datetime] = None
+        self.completed_at: Optional[datetime] = None
+        self.archived_at: Optional[datetime] = None
+        
+        # Tags and notes
+        self.tags: Set[str] = set()
+        self.notes: List[str] = []
+        
+        TaskLogger().info(f"Stateful task created: {self.title}")
+        GlobalStats().increment('tasks_created')
+    
+    @staticmethod
+    def _generate_id() -> str:
+        return str(int(datetime.now().timestamp() * 1000000))
+    
+    # ========== STATE TRANSITIONS ==========
+    
+    def transition_to(self, new_state_name: str) -> bool:
+        """
+        Transition to a new state.
+        Returns True if successful, False if invalid transition.
+        """
+        # Check if transition is allowed
+        if not self.state.can_transition_to(new_state_name):
+            TaskLogger().warning(
+                f"Invalid transition: {self.state.get_state_name()} → {new_state_name}",
+                task_id=self.id
+            )
+            return False
+        
+        # Get new state
+        new_state = TASK_STATES.get(new_state_name)
+        if not new_state:
+            return False
+
+        # Perform the transition
+        old_state_name = self.state.get_state_name()
+
+        self.state.on_exit(self)
+        self.state = new_state
+        self.state.on_enter(self)
+
+        TaskLogger().info(
+            f"State transition: {old_state_name} -> {new_state_name}",
+            task_id=self.id,
+            title=self.title
+        )
+    
+    def start(self) -> bool:
+        """Start the task (Draft → Active)"""
+        return self.transition_to("Active")
+    
+    def send_to_review(self) -> bool:
+        return self.transition_to("In Review")
+    
+    def complete_task(self) -> bool:
+        """Complete the task (any state → Completed)"""
+        return self.transition_to("Completed")
+    
+    def hold(self) -> bool:
+        """Put on hold (Active → On Hold)"""
+        return self.transition_to("On Hold")
+    
+    def resume(self) -> bool:
+        """Resume from hold (On Hold → Active)"""
+        return self.transition_to("Active")
+    
+    def reopen(self) -> bool:
+        """Reopen completed task (Completed → Active)"""
+        return self.transition_to("Active")
+    
+    def archive(self) -> bool:
+        """Archive the task (any state → Archived)"""
+        return self.transition_to("Archived")
+    
+    def restore(self) -> bool:
+        """Restore from archive (Archived → Draft)"""
+        return self.transition_to("Draft")
+    
+    # ========== STATE-DEPENDENT BEHAVIOR ==========
+    
+    def can_edit(self) -> bool:
+        """Check if task can be edited in current state"""
+        return self.state.can_edit()
+    
+    def can_delete(self) -> bool:
+        return self.state.can_delete()
+
+    def can_complete(self) -> bool:
+        """Check if task can be completed in current state"""
+        return self.state.can_complete()
+    
+    def update_title(self, new_title: str) -> bool:
+        """Update title (only if editable)"""
+        if not self.can_edit():
+            print(f"❌ Cannot edit task in {self.state.get_state_name()} state")
+            return False
+        
+        self.title = new_title.strip()
+        return True
+    
+    def update_description(self, new_description: str) -> bool:
+        """Update description (only if editable)"""
+        if not self.can_edit():
+            print(f"❌ Cannot edit task in {self.state.get_state_name()} state")
+            return False
+        
+        self.description = new_description.strip()
+        return True
+    
+    def add_tag(self, tag: str):
+        """Add a tag"""
+        self.tags.add(tag)
+    
+    def add_note(self, note: str):
+        """Add a note"""
+        self.notes.append(note)
+
+    def get_state_summary(self) -> str:
+        """Get a summary of current state"""
+        icon = self.state.get_state_icon()
+        name = self.state.get_state_name()
+
+        info = []
+        if self.started_at:
+            info.append(f"Started: {self.started_at.strftime('%m/%d %H:%M')}")
+        if self.completed_at:
+            info.append(f"Completed: {self.completed_at.strftime('%m/%d %H:%M')}")
+        if self.archived_at:
+            info.append(f"Archived: {self.archived_at.strftime('%m/%d %H:%M')}")
+        
+        info_str = " | ".join(info) if info else ""
+        return f"{icon} {name}" + (f" ({info_str})" if info_str else "")
+        
+    def __str__(self) -> str:
+        state_icon = self.state.get_state_icon()
+        state_name = self.state.get_state_name()
+        tags_str = f" [{''.join(f'#{t} ' for t in sorted(self.tags))}]" if self.tags else ""
+        return f"{state_icon} [{state_name}] {self.title}{tags_str}"
 
 
 # ============================================================================
